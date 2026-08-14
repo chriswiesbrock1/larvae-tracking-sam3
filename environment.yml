@@ -1,0 +1,25 @@
+# Conda environment for the SAM 3 larva-tracking pipeline.
+#
+# Installing PyTorch with CUDA from conda-forge is unreliable; the GPU wheels
+# are therefore pulled from the official PyTorch index via pip. Adjust the
+# CUDA suffix (cu128) to match your driver.
+name: larvae-tracking-sam3
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.9.1+cu128
+      - torchvision==0.24.1+cu128
+      - accelerate==1.12.0
+      - transformers>=5.0.0.dev0
+      - opencv-python==4.12.0.88
+      - numpy
+      - pandas
+      - scipy
+      - matplotlib
+      - seaborn
+      - statsmodels
+      - openpyxl

@@ -1,0 +1,18 @@
+# Core pipeline (segmentation + droplet extraction)
+# NOTE: SAM 3 requires a transformers build that ships Sam3VideoModel.
+#       At the time of writing this is the 5.0.0 development line.
+transformers>=5.0.0.dev0
+accelerate>=1.12.0
+torch>=2.9.1
+opencv-python>=4.12.0
+numpy>=1.26
+
+# Analysis of DeepLabCut output
+pandas>=2.0
+scipy>=1.11
+matplotlib>=3.8
+seaborn>=0.13
+openpyxl>=3.1
+
+# Group statistics (mixed models, FDR correction)
+statsmodels>=0.14

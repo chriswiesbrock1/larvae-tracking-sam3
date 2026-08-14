@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------
+# Data — never commit raw or derived experimental data
+# ---------------------------------------------------------------
+videos/
+data/
+droplet_videos/
+Analysis_Results/
+*.mp4
+*.avi
+*.mkv
+*.tif
+*.tiff
+*.h5
+*.pickle
+*.pkl
+*.pt
+*.pth
+*.onnx
+
+# Derived images / tables produced by the pipeline
+frame0_mask.png
+frame0_overlay.png
+droplet_id_mask.png
+droplet_schema.png
+droplets.csv
+droplet_pixels.csv
+*_Summary_Results.csv
+Combined_All_Folders_Summary.csv
+
+# Spreadsheets and figures are usually results, not source
+*.xlsx
+*.xls
+*.gif
+!examples/*.csv
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------
+# Environment managers
+# ---------------------------------------------------------------
+.pixi/*
+!.pixi/config.toml
+pixi.lock
+
+# ---------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+.spyproject/
+.DS_Store
+Thumbs.db
+desktop.ini

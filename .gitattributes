@@ -1,0 +1,8 @@
+# Normalise line endings for text files
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+
+# Do not diff generated lock files
+pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
