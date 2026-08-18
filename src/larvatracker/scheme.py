@@ -24,13 +24,23 @@ UNKNOWN_GROUP = "Unknown"
 
 
 def load_scheme(path: str) -> pd.DataFrame:
-    """Read a scheme file and normalise its two required columns."""
+    """Read a scheme file and normalise its two required columns.
+
+    CSV scheme files are written by hand and turn up with either a comma or a
+    semicolon separator depending on the machine's locale — a German Excel
+    exports semicolons. The separator is therefore sniffed rather than assumed;
+    guessing wrong would produce a single merged column and a confusing
+    "missing column" error.
+    """
     ext = os.path.splitext(path)[1].lower()
 
     if ext in (".xlsx", ".xlsm", ".xls"):
         df = pd.read_excel(path)
     else:
         df = pd.read_csv(path)
+
+        if len(df.columns) == 1 and ";" in str(df.columns[0]):
+            df = pd.read_csv(path, sep=";")
 
     missing = {"Droplet", "Group"} - set(df.columns)
     if missing:

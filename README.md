@@ -36,11 +36,19 @@ long-format summary table + per-droplet figures
 baseline-normalised group comparison, mixed model, post-hoc tests
 ```
 
-When the recording includes a temperature ramp, the framewise export
-(`Framewise_Movement_Temperature.csv`) carries the chamber temperature per
-frame, and `scripts/07_temperature_response.py` runs a separate branch:
-movement is normalised per larva, binned by temperature and compared across
-treatment groups.
+When the recording includes a temperature ramp there is a second branch:
+
+```
+droplet schema + ROI videos + temperature.csv
+        │
+        │  scripts/08_framewise_temperature.py
+        ▼
+one row per larva, keypoint and frame, with its temperature
+        │
+        │  scripts/07_temperature_response.py
+        ▼
+movement across temperature, compared across groups
+```
 
 ### Why segment only the first frame
 
@@ -216,6 +224,21 @@ did its job.
 
 ### Optional: response to a temperature ramp
 
+First join movement and temperature frame by frame:
+
+```bash
+python scripts/08_framewise_temperature.py data/Genotypes --pattern "V*_*"
+```
+
+Recordings whose LCD could not be read have no `temperature.csv`; they are
+skipped and listed in `_framewise_report.csv` rather than aborting the batch.
+That report also carries each recording's **temperature coverage** — the
+fraction of frames that actually carry a reading. A recording at 40 % coverage
+still produces output that looks fine, so check the column;
+`--min-coverage 0.8` turns the check into a hard filter.
+
+Then run the comparison:
+
 ```bash
 python scripts/07_temperature_response.py \
     Analgetics/Combined_All_Folders_Framewise_Temperature.csv \
@@ -227,12 +250,22 @@ Each larva is normalised to its own first seconds, frames are binned by chamber
 temperature, and every treatment is tested against its own vehicle control
 (Asp/Ibu vs ETOH, Dic vs DMSO, Cis vs PBS — configurable with `--control-map`).
 
+`--control-map` takes a JSON file mapping a substring of the group name to the
+group it should be compared against, so the same script handles designs that
+are not drug/vehicle at all:
+
+```json
+{"germfree": "conventional", "painless": "conventional"}
+```
+
 Two guard rails run automatically and are worth reading in the output:
 
 - **Coverage.** Recordings start and end at different temperatures, so the
   extreme bins come from a small subset of experiments. Bins reached by fewer
   than `--min-folders-per-bin` experiments are dropped from the figures and
-  statistics, and listed in `bin_coverage.csv`.
+  statistics, and listed in `bin_coverage.csv`. The default is a majority of
+  the experiments present, capped at 5 — a fixed number would silently empty
+  the analysis on a dataset of three recordings.
 - **Vehicle agreement.** If the vehicle controls differ from each other, curves
   from different datasets are not comparable and the script says so. The
   per-drug figure and `stats_vs_control.csv` stay valid either way, because
@@ -278,6 +311,7 @@ src/larvatracker/       importable package
   scheme.py             droplet ID → treatment group
   plotting.py           per-droplet and population figures
   stats.py              normalisation, mixed model, post-hoc tests
+  framewise.py          per-frame movement joined with the temperature
   temperature.py        movement versus temperature across treatment groups
   pipeline.py           end-to-end drivers
   cli.py                shared command line arguments

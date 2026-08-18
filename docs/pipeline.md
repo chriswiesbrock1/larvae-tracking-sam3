@@ -210,6 +210,105 @@ of one and quietly shrink a real group.
 
 ---
 
+## The temperature branch (`08_framewise_temperature.py`, `07_temperature_response.py`)
+
+Steps 3 to 5 ask how much a larva moved *over time*. When the stage runs a
+temperature ramp, the more interesting question is how much it moved *at a
+given temperature* — which needs a different reduction, not a different
+experiment.
+
+### Step 8 — joining movement and temperature
+
+Step 3 collapses each larva to summary numbers per time bin; the temperature
+analysis needs the opposite, one row per larva, keypoint and frame. Step 8
+produces that table by joining the per-frame displacement with
+`temperature.csv`.
+
+**The join is exact, not approximate.** Both sides are indexed by frame number
+and both were produced in the same decode pass in step 1, so there is no clock
+to align and nothing to interpolate between devices. The keypoints are
+re-sorted along the body axis first, exactly as in step 3 — skipping that
+would let a head/tail label swap appear as a large displacement, attributed to
+whatever temperature that frame happened to be at.
+
+**A missing display is not a failed experiment.** A recording whose LCD could
+not be located has no `temperature.csv`; it is skipped and recorded in
+`_framewise_report.csv` instead of aborting the batch. The rest of that
+recording is still perfectly good for the time-based analysis in steps 3 to 5.
+
+**Coverage is the number to check.** A recording read at 42 % coverage produces
+a file that looks entirely normal but rests on two fifths of the frames — a
+worse failure mode than a missing file, because nothing draws attention to it.
+The fraction is reported per recording, a warning is printed below 80 %, and
+`--min-coverage` turns it into a hard filter.
+
+**A frame-count mismatch means trouble.** If the tracking and the temperature
+disagree on how many frames the recording has, they came from different runs
+of step 1. Only the overlap is kept and the difference is reported; the right
+fix is to reprocess, not to trust the overlap.
+
+Frames without a temperature are dropped by default, since they contribute
+nothing to a temperature analysis and can be the majority of a poorly read
+recording. `--keep-missing-temperature` keeps them.
+
+Expect roughly *droplets x 5 x frames* rows per recording — around half a
+million for two minutes of 30 droplets, so tens of MB per experiment.
+
+### Step 7 — comparing groups across temperature
+
+1. **Pool the keypoints.** The question is how *much* the animal moved, not
+   which part, so the five keypoints are averaged per larva and frame.
+2. **Normalise per larva** to its own opening seconds. Absolute movement
+   depends on body size and on how well that droplet tracked; the ratio does
+   not. Verify that the baseline window really is at ambient temperature — in
+   the recordings this was built for, 25 °C is not reached before 40 s.
+   Larvae that were immobile during the window have no defined ratio and are
+   dropped rather than clipped.
+3. **Bin by temperature** into `--temp-bin` wide bins, labelled by centre.
+4. **Reduce to one value per larva and bin** *before* any statistics. A
+   recording provides thousands of frames but only a handful of animals, and
+   frames within one larva are heavily autocorrelated; testing on frames would
+   treat that as independent evidence.
+5. **Compare each group against its own control**, per bin, with a two-sided
+   Mann-Whitney U test and Benjamini-Hochberg FDR across all comparisons.
+
+### Two guard rails, and why they exist
+
+**Bin coverage.** Recordings start and end at different temperatures, so the
+extreme bins are populated by a small, non-random subset of experiments — a
+group difference there is confounded with which recording got that far. Bins
+below `--min-folders-per-bin` are dropped and listed in `bin_coverage.csv`.
+
+The default is a *majority of the experiments present, capped at five*. A fixed
+number does not survive datasets of different sizes: five is a sensible bar
+among nineteen recordings and silently empties the analysis among three. If
+everything is dropped the script now says so and exits, rather than reporting
+zero larvae as though that were a result.
+
+**Vehicle agreement.** If the control groups differ from each other, curves
+from different datasets cannot be read against one another — the difference
+may come from the vehicle or from the recording batch rather than the
+treatment. The check runs automatically and warns. The per-drug figure and
+`stats_vs_control.csv` stay valid regardless, because each group is only ever
+compared against its own control.
+
+### Controls are configurable
+
+`--control-map` maps a substring of the group name to the group it should be
+tested against. The default covers the drug/vehicle design this was built for
+(`asp`/`ibu` → `ETOH`, `dic` → `DMSO`, `cis` → `PBS`), but the mechanism is
+generic — a genotype comparison is just a different map:
+
+```json
+{"germfree": "conventional", "painless": "conventional"}
+```
+
+Groups with no entry are skipped rather than compared against something
+arbitrary, so an unmapped group shows up as missing rows in
+`stats_vs_control.csv` rather than as a wrong result.
+
+---
+
 ## Reproducibility notes
 
 - Droplet IDs are reproducible for a given mask but not comparable across

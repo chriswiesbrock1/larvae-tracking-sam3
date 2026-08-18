@@ -46,6 +46,7 @@ from larvatracker.temperature import (
     add_temperature_bins,
     bin_coverage,
     compare_controls,
+    default_min_folders,
     compare_to_controls,
     filter_by_coverage,
     group_summary,
@@ -102,10 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-folders-per-bin",
         type=int,
-        default=5,
+        default=None,
         help="drop temperature bins reached by fewer experiments; the extreme "
         "bins are covered by only a few recordings and would confound group "
-        "differences with which recording got there",
+        "differences with which recording got there. Default: a majority of "
+        "the experiments present, capped at 5",
     )
     parser.add_argument(
         "--control-map",
@@ -169,14 +171,31 @@ def main(argv: list[str] | None = None) -> int:
     coverage = bin_coverage(per_larva_all)
     coverage.to_csv(os.path.join(args.out_dir, "bin_coverage.csv"), index=False)
 
-    per_larva, dropped_bins = filter_by_coverage(
-        per_larva_all, min_folders=args.min_folders_per_bin
-    )
+    min_folders = args.min_folders_per_bin
+    if min_folders is None:
+        min_folders = default_min_folders(per_larva_all)
+        print(
+            f"\nCoverage threshold: a bin must appear in at least {min_folders} of "
+            f"{per_larva_all['Folder'].nunique()} experiment(s) "
+            "(override with --min-folders-per-bin)"
+        )
+
+    per_larva, dropped_bins = filter_by_coverage(per_larva_all, min_folders=min_folders)
+
+    if per_larva.empty:
+        print(
+            f"\nerror: every temperature bin was dropped — no bin is covered by "
+            f"{min_folders} experiment(s). Lower --min-folders-per-bin (this dataset "
+            f"has {per_larva_all['Folder'].nunique()} experiment(s)) or widen "
+            "--temp-bin so that more frames fall into each bin.",
+            file=sys.stderr,
+        )
+        return 1
 
     if not dropped_bins.empty:
         print(
             f"\n{len(dropped_bins)} temperature bin(s) dropped for thin coverage "
-            f"(< {args.min_folders_per_bin} experiments):"
+            f"(< {min_folders} experiments):"
         )
         print(
             dropped_bins[["Temp_Bin", "N_Folders", "N_Groups", "N_Observations"]]
@@ -234,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         "baseline_seconds": args.baseline_seconds,
         "temperature_bin_width": args.temp_bin,
         "control_map": control_map,
-        "min_folders_per_bin": args.min_folders_per_bin,
+        "min_folders_per_bin": int(min_folders),
         "bins_dropped_for_coverage": [float(b) for b in dropped_bins["Temp_Bin"]],
         "larvae_after_exclusion": int(
             per_larva.groupby(["Dataset", "Folder", "Droplet"]).ngroups

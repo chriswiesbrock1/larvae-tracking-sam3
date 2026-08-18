@@ -14,6 +14,7 @@ Analysis of pose estimates
     :mod:`larvatracker.scheme`    mapping droplet IDs to experimental groups
     :mod:`larvatracker.plotting`  per-droplet and population figures
     :mod:`larvatracker.stats`     baseline normalisation and group statistics
+    :mod:`larvatracker.framewise`    per-frame movement joined with temperature
     :mod:`larvatracker.temperature`  movement versus temperature across groups
 """
 

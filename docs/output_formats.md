@@ -177,6 +177,52 @@ makes unusually active or unusually still droplets easy to spot.
 
 ---
 
+## Step 8 — framewise export
+
+### `Framewise_Movement_Temperature.csv` and `Combined_All_Folders_Framewise_Temperature.csv`
+
+One row per larva, keypoint and frame — the input for step 7.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `Folder` | str | experiment the row came from |
+| `Droplet` | int | droplet ID |
+| `Group` | str | treatment or genotype, `Unknown` without a scheme file |
+| `BodyPart` | str | keypoint label **after** body-axis sorting |
+| `Frame` | int | frame index, shared between movement and temperature |
+| `Time_Sec` | float | timestamp taken from `temperature.csv` |
+| `Temperature_C` | float | chamber temperature at that frame |
+| `Movement_px_frame` | float | displacement since the previous frame; empty at frame 0 |
+| `Movement_MA_px_frame` | float | the same, smoothed over `--smoothing-window` frames |
+
+By default only frames carrying a temperature appear, so `Temperature_C` is
+never empty. `--keep-missing-temperature` retains the rest.
+
+These files get large — roughly *droplets x 5 x frames* rows per recording,
+which is around half a million for a two-minute recording of 30 droplets.
+
+### `_framewise_report.csv`
+
+One row per experiment, and the first place to look after a batch run.
+
+| Column | Meaning |
+| --- | --- |
+| `folder` | experiment name |
+| `status` | `ok`, `skipped` or `error` |
+| `reason` | why it was skipped or what failed |
+| `temperature_coverage` | fraction of frames carrying a reading, 0–1 |
+| `droplets`, `frames`, `rows` | size of what was processed |
+| `rows_dropped_no_temperature` | rows removed for having no temperature |
+| `frame_count_mismatch` | frame-count difference between movement and temperature |
+
+**`temperature_coverage` is the column worth reading.** A recording at 0.42
+produces a file that looks perfectly normal but rests on two fifths of the
+frames. A non-zero `frame_count_mismatch` means the tracking and the
+temperature came from different runs of step 1 — only the overlapping frames
+were kept, and the recording should be reprocessed.
+
+---
+
 ## Step 5 — statistics outputs
 
 ### `normalised_data.csv`

@@ -227,3 +227,47 @@ def test_controls_are_not_compared_against_themselves():
     ]
 
     assert compare_to_controls(pd.DataFrame(rows)).empty
+
+
+# ---------------------------------------------------------------------------
+# Coverage threshold adapts to the dataset
+# ---------------------------------------------------------------------------
+
+def per_larva_with_folders(n_folders, n_bins=4):
+    """One larva per folder, present in every bin."""
+    rows = []
+    for f in range(n_folders):
+        for b in range(n_bins):
+            rows.append(
+                {
+                    "Dataset": "D",
+                    "Folder": f"F{f}",
+                    "Droplet": 1,
+                    "Group": "ETOH" if f % 2 else "5 mM Asp",
+                    "Temp_Bin": 25.0 + b,
+                    "Movement_norm": 1.0,
+                    "N_Frames": 100,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize(
+    "n_folders,expected",
+    [(1, 1), (2, 1), (3, 2), (4, 2), (8, 4), (19, 5), (40, 5)],
+)
+def test_default_threshold_is_a_capped_majority(n_folders, expected):
+    """A fixed threshold empties small datasets; a majority scales with them."""
+    from larvatracker.temperature import default_min_folders
+
+    assert default_min_folders(per_larva_with_folders(n_folders)) == expected
+
+
+def test_small_dataset_survives_the_default_threshold():
+    """Three experiments must not produce an empty analysis."""
+    from larvatracker.temperature import filter_by_coverage
+
+    kept, dropped = filter_by_coverage(per_larva_with_folders(3))
+
+    assert not kept.empty
+    assert dropped.empty

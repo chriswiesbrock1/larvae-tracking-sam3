@@ -26,6 +26,7 @@ larva and bin before testing avoids treating frames as independent samples.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 
@@ -350,12 +351,38 @@ def bin_coverage(per_larva: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def default_min_folders(per_larva: pd.DataFrame, cap: int = 5) -> int:
+    """Pick a sensible coverage threshold for the dataset at hand.
+
+    A fixed threshold does not survive contact with datasets of different
+    sizes: five experiments is a reasonable bar when nineteen were recorded,
+    but it silently empties the analysis when there are only three. The
+    requirement is therefore a simple majority of the available experiments,
+    capped so that a large dataset does not become needlessly strict.
+
+    With a temperature ramp the chamber sweeps some bins quickly, so not every
+    recording contributes to every bin even when all of them cover the range —
+    which is why a majority, rather than all, is the right bar.
+    """
+    n_folders = int(per_larva["Folder"].nunique())
+    if n_folders <= 1:
+        return 1
+
+    return min(cap, max(1, math.ceil(n_folders / 2)))
+
+
 def filter_by_coverage(
     per_larva: pd.DataFrame,
-    min_folders: int = 5,
+    min_folders: int | None = None,
     min_groups: int = 2,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Drop temperature bins that too few experiments reached.
+
+    Parameters
+    ----------
+    min_folders:
+        Minimum number of experiments a bin must appear in. ``None`` picks a
+        value with :func:`default_min_folders` based on the dataset size.
 
     Returns
     -------
@@ -363,6 +390,9 @@ def filter_by_coverage(
         ``dropped_bins`` is the coverage table restricted to the removed bins,
         so the exclusion is auditable rather than silent.
     """
+    if min_folders is None:
+        min_folders = default_min_folders(per_larva)
+
     coverage = bin_coverage(per_larva)
     ok = (coverage["N_Folders"] >= min_folders) & (coverage["N_Groups"] >= min_groups)
 

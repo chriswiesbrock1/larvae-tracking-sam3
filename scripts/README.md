@@ -10,6 +10,7 @@ Numbered by the order they are normally run. Every script supports `--help`.
 | `04_batch_analysis.py` | Run step 3 over every experiment folder of a project |
 | `05_group_statistics.py` | Baseline normalisation, mixed model and post-hoc tests |
 | `06_droplet_kinematics.py` | Full kinematic time course for a single larva |
+| `08_framewise_temperature.py` | Join per-frame movement with the per-frame chamber temperature |
 | `07_temperature_response.py` | Movement versus temperature, compared across treatment groups |
 
 Pose estimation itself (step 2) happens in DeepLabCut and is not part of this
