@@ -32,7 +32,7 @@ import os
 import sys
 
 from larvatracker.config import SegmentationConfig
-from larvatracker.lcd_temperature import TemperatureConfig
+from larvatracker.lcd_temperature import TemperatureConfig, load_calibration
 from larvatracker.pipeline import collect_videos, segment_batch
 
 
@@ -137,6 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
         "continuing without a temperature trace",
     )
     temperature.add_argument(
+        "--lcd-calibration",
+        nargs="*",
+        default=None,
+        help="calibration JSON files from scripts/10_calibrate_lcd.py; matched to "
+        "recordings by file name. Use when the automatic search missed the display",
+    )
+    temperature.add_argument(
         "--lcd-min-score",
         type=float,
         default=TemperatureConfig().locator_min_score,
@@ -208,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
         expected_start_max_c=args.lcd_expected_start[1],
     )
 
+    calibrations = {}
+    for path in args.lcd_calibration or []:
+        calibration = load_calibration(path)
+        stem = os.path.splitext(os.path.basename(calibration["video"]))[0]
+        calibrations[stem] = calibration
+        print(f"LCD calibration for {stem}: {calibration['geometry']} "
+              f"at {tuple(calibration['anchor'])}")
+
     summary_path = args.summary
     if summary_path is None:
         base = args.inputs[0]
@@ -221,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         continue_on_error=not args.stop_on_error,
         skip_completed=args.skip_completed,
         summary_path=summary_path,
+        lcd_calibrations=calibrations or None,
         out_dir=args.out_dir,
         write_videos=not args.no_videos,
         write_pixel_table=args.pixel_table,

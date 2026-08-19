@@ -226,6 +226,29 @@ def _order_groups(groups) -> list[str]:
     return ordered + sorted(present - set(ordered))
 
 
+def _colour_map(groups) -> dict:
+    """One fixed colour per group, decided once for the whole figure.
+
+    Matplotlib restarts its colour cycle on every axis, so a group that appears
+    in two panels — or is absent from one of them — would come out in different
+    colours. On a figure whose whole point is comparing the panels, that is a
+    reliable way to be misread.
+    """
+    cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    colours, next_index = {}, 0
+
+    for group in _order_groups(groups):
+        preset = TEMPERATURE_PALETTE.get(group)
+
+        if preset is not None:
+            colours[group] = preset
+        else:
+            colours[group] = cycle[next_index % len(cycle)] if cycle else None
+            next_index += 1
+
+    return colours
+
+
 def plot_temperature_response(
     summary: pd.DataFrame,
     out_path: str,
@@ -238,19 +261,22 @@ def plot_temperature_response(
     than during their own opening seconds.
     """
     groups = _order_groups(summary["Group"].unique())
+    colours = _colour_map(groups)
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
     for group in groups:
         data = summary[summary["Group"] == group].sort_values("Temp_Bin")
-        colour = TEMPERATURE_PALETTE.get(group)
 
-        ax.plot(data["Temp_Bin"], data["Mean"], label=group, color=colour, lw=2)
+        (line,) = ax.plot(
+            data["Temp_Bin"], data["Mean"], label=group, color=colours[group], lw=2
+        )
+
         ax.fill_between(
             data["Temp_Bin"],
             data["Mean"] - data["SEM"],
             data["Mean"] + data["SEM"],
-            color=colour,
+            color=line.get_color(),
             alpha=0.18,
             linewidth=0,
         )
@@ -304,15 +330,22 @@ def plot_temperature_response_by_family(
             if data.empty:
                 continue
 
-            colour = TEMPERATURE_PALETTE.get(group)
             style = "--" if group == control else "-"
 
-            ax.plot(data["Temp_Bin"], data["Mean"], label=group, color=colour, lw=2, ls=style)
+            (line,) = ax.plot(
+                data["Temp_Bin"],
+                data["Mean"],
+                label=group,
+                color=TEMPERATURE_PALETTE.get(group),
+                lw=2,
+                ls=style,
+            )
+
             ax.fill_between(
                 data["Temp_Bin"],
                 data["Mean"] - data["SEM"],
                 data["Mean"] + data["SEM"],
-                color=colour,
+                color=line.get_color(),
                 alpha=0.18,
                 linewidth=0,
             )
@@ -384,6 +417,132 @@ def plot_significance_heatmap(
     ax.set_xlabel("temperature bin (°C)")
     ax.set_ylabel("")
     ax.set_title("Effect versus vehicle control (dot = significant after FDR)")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
+    return out_path
+
+
+def plot_model_fit(
+    predicted: pd.DataFrame,
+    contrasts: pd.DataFrame,
+    out_path: str,
+    control: str,
+    observed: pd.DataFrame | None = None,
+    dpi: int = 200,
+) -> str:
+    """Model-predicted curves on top, group-versus-control ratios below.
+
+    The lower panel is on a log scale with 1.0 marked, because the contrasts
+    are ratios: a group at 0.5 and one at 2.0 are equally far from no effect
+    and should look it.
+
+    The confidence bands are pointwise. Neighbouring temperatures are strongly
+    correlated, so the band shows where a difference sits — it is not a strip
+    of independent tests, and the omnibus test is what establishes whether
+    there is a difference at all.
+    """
+    fig, axes = plt.subplots(
+        2, 1, figsize=(12, 9), sharex=True, gridspec_kw={"height_ratios": [3, 2]}
+    )
+
+    # One colour map for both panels: the lower panel has no control line, so
+    # a per-axis cycle would shift every colour by one and invite misreading.
+    colours = _colour_map(set(predicted["Group"]) | set(contrasts["Group"]))
+
+    # --- predicted curves ------------------------------------------------
+    for group in _order_groups(predicted["Group"].unique()):
+        data = predicted[predicted["Group"] == group].sort_values("Temperature_C")
+
+        style = "--" if group == control else "-"
+        (line,) = axes[0].plot(
+            data["Temperature_C"],
+            data["Predicted"],
+            label=group,
+            color=colours[group],
+            lw=2,
+            ls=style,
+        )
+        axes[0].fill_between(
+            data["Temperature_C"],
+            data["CI_low"],
+            data["CI_high"],
+            color=line.get_color(),
+            alpha=0.15,
+            linewidth=0,
+        )
+
+        if observed is not None:
+            seen = observed[observed["Group"] == group]
+            if not seen.empty:
+                means = seen.groupby("Temp_Bin")["Movement_norm"].mean()
+                axes[0].plot(
+                    means.index, means.to_numpy(), ".", ms=4, alpha=0.35, color=line.get_color()
+                )
+
+    axes[0].axhline(1.0, ls=":", lw=0.8, color="grey")
+    axes[0].set_ylabel("movement (normalised)")
+    axes[0].set_title("Model fit: movement across temperature")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend(title="Group", fontsize=9)
+
+    # --- contrasts -------------------------------------------------------
+    for group in _order_groups(contrasts["Group"].unique()):
+        data = contrasts[contrasts["Group"] == group].sort_values("Temperature_C")
+
+        (line,) = axes[1].plot(
+            data["Temperature_C"],
+            data["Ratio"],
+            label=f"{group} / {control}",
+            color=colours[group],
+            lw=2,
+        )
+        axes[1].fill_between(
+            data["Temperature_C"],
+            data["CI_low"],
+            data["CI_high"],
+            color=line.get_color(),
+            alpha=0.15,
+            linewidth=0,
+        )
+
+    axes[1].axhline(1.0, ls="--", lw=1.0, color="black")
+    axes[1].set_yscale("log")
+    axes[1].set_ylabel(f"ratio to {control}")
+    axes[1].set_xlabel("temperature (°C)")
+    axes[1].set_title("Ratio to control, with pointwise 95 % interval")
+    axes[1].grid(alpha=0.25, which="both")
+    axes[1].legend(fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
+    return out_path
+
+
+def plot_model_diagnostics(fit, out_path: str, dpi: int = 150) -> str:
+    """Residuals against fitted values, and a normal quantile plot.
+
+    Kept deliberately plain: these are for checking the fit, not for a paper.
+    """
+    from scipy import stats
+
+    residuals = np.asarray(fit.resid)
+    fitted = np.asarray(fit.fittedvalues)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    axes[0].plot(fitted, residuals, ".", ms=3, alpha=0.3)
+    axes[0].axhline(0, color="black", lw=1)
+    axes[0].set_xlabel("fitted (log scale)")
+    axes[0].set_ylabel("residual")
+    axes[0].set_title("Residuals versus fitted")
+    axes[0].grid(alpha=0.25)
+
+    stats.probplot(residuals, dist="norm", plot=axes[1])
+    axes[1].set_title("Normal quantile plot")
+    axes[1].grid(alpha=0.25)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=dpi)

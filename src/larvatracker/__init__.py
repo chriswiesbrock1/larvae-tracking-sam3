@@ -16,6 +16,7 @@ Analysis of pose estimates
     :mod:`larvatracker.stats`     baseline normalisation and group statistics
     :mod:`larvatracker.framewise`    per-frame movement joined with temperature
     :mod:`larvatracker.temperature`  movement versus temperature across groups
+    :mod:`larvatracker.model`     mixed model for the temperature response
 """
 
 __version__ = "0.1.0"

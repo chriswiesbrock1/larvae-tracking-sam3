@@ -101,11 +101,48 @@ On a monotonic ramp the median can shift a value by one display step, i.e.
 0.1 °C. That is inherent to the filter and well below the display's own
 resolution.
 
-**Tuning.** If a known-good display is missed, lower `--lcd-min-score` and
-check `temperature_display_debug.png`. If the recording starts outside 15–45 °C,
+### When the search misses the display (`10_calibrate_lcd.py`)
+
+**Do not simply lower `--lcd-min-score`.** On the recording this was written
+for, the rejected candidate decoded to 98.8 °C while the screen showed 23.7 —
+lowering the threshold would have produced a complete, confident and entirely
+wrong temperature trace. The threshold was doing its job.
+
+The failure is almost never a missing geometry. It is the anchor: the
+full-frame search scores how digit-like and how LCD-coloured each position
+looks, and on a busy scene it can settle a few pixels — or a few hundred —
+away from the display. The same profile that failed on one recording reads
+another perfectly.
+
+`scripts/10_calibrate_lcd.py` removes the guesswork. The display region is
+found by colour and the digits by shape, which narrows the anchor to a small
+window; the anchor and scale are then chosen by the one criterion that cannot
+be faked — the decoded value has to equal the number you can see on screen:
+
+```bash
+python scripts/10_calibrate_lcd.py data/V1.mp4 --known-temperature 23.7
+```
+
+If the display sits in a busy corner, `--roi X0 Y0 X1 Y1` narrows the search.
+The result is a JSON file, and the tool reports what fraction of frames it
+actually reads — a calibration that decodes the first frame but drifts later
+is worse than useless.
+
+Two ways to use it:
+
+- `--write-temperature` reads the whole recording there and then and writes
+  `temperature.csv`, **without re-running SAM 3**. This is the one to use when
+  only the temperature failed and the segmentation is already done.
+- `--lcd-calibration file.json` on step 1 uses it for a fresh run.
+
+With a fixed camera the calibration from one recording usually fits the whole
+session, but check the coverage per recording rather than assuming it.
+
+**Tuning the automatic search.** If the recording starts outside 15–45 °C,
 widen `--lcd-expected-start`, otherwise the correct candidate is penalised as
-implausible. A genuinely new display shape needs a new entry in
-`GEOMETRY_PROFILES` in `src/larvatracker/lcd_temperature.py`.
+implausible. A genuinely different display shape needs a new entry in
+`GEOMETRY_PROFILES` in `src/larvatracker/lcd_temperature.py` — but measure
+before assuming that is the problem.
 
 ---
 

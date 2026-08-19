@@ -76,8 +76,16 @@ def render_display(
         -1,
     )
 
-    half = max(3, int(round(9 * scale)))
-    thickness = max(3, int(round(5 * scale)))
+    # Half-lengths taken from the cell the profile describes, so the bars meet
+    # at the corners the way a real seven-segment glyph does. Drawing them
+    # shorter would leave each segment as its own blob, and the digit-finding
+    # in the calibration looks for whole digits.
+    cell = offsets[0]
+    half_horizontal = int(round(0.55 * (cell[:, 0].max() - cell[:, 0].min())))
+    half_vertical = int(round(0.30 * (cell[:, 1].max() - cell[:, 1].min())))
+    # Thick, high-contrast bars: these frames are written to mp4 and read back
+    # in the calibration tests, and thin strokes do not survive the compression.
+    thickness = max(5, int(round(9 * scale)))
 
     for digit_index, digit in enumerate(digits):
         pattern = DIGIT_PATTERNS[digit]
@@ -90,9 +98,9 @@ def render_display(
             cx, cy = ox + int(px), oy + int(py)
 
             if SEGMENT_HORIZONTAL[segment_index]:
-                start, end = (cx - half, cy), (cx + half, cy)
+                start, end = (cx - half_horizontal, cy), (cx + half_horizontal, cy)
             else:
-                start, end = (cx, cy - half), (cx, cy + half)
+                start, end = (cx, cy - half_vertical), (cx, cy + half_vertical)
 
             cv2.line(frame, start, end, (15, 15, 15), thickness)
 
@@ -417,3 +425,129 @@ def test_single_pass_reads_a_temperature_ramp_and_cuts_roi_videos(tmp_path):
 
     # Timestamps must be strictly increasing for the framewise export to be usable.
     assert (np.diff(table["time_s"].to_numpy()) > 0).all()
+
+
+# ---------------------------------------------------------------------------
+# Calibrating against a known reading
+# ---------------------------------------------------------------------------
+
+def write_synthetic_video(path, value, n_frames=20, origin=(1400, 200), frame_size=(1080, 1920)):
+    height, width = frame_size
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (width, height), True
+    )
+    frame = render_display(value, frame_size=frame_size, origin=origin)
+    for _ in range(n_frames):
+        writer.write(frame)
+    writer.release()
+    return str(path)
+
+
+def test_calibration_recovers_the_known_reading():
+    """The whole point: the calibration must reproduce what is on the screen.
+
+    Calibrated on the rendered frame directly. Writing it to mp4 first would
+    test the codec's treatment of thin dark strokes, which is not what this is
+    about — real displays are far higher contrast than a drawn one.
+    """
+    from larvatracker.lcd_temperature import calibrate_display
+
+    frame = render_display(26.4, origin=(1400, 200))
+
+    calibration = calibrate_display("synthetic", known_temperature=26.4, frame=frame)
+
+    assert calibration["decoded_temperature_c"] == pytest.approx(26.4, abs=0.05)
+    assert calibration["segment_errors"] == 0
+    assert calibration["geometry"] in GEOMETRY_PROFILES
+
+
+def test_calibration_refuses_a_wrong_known_value():
+    """Told the wrong number, it must fail rather than find something close."""
+    from larvatracker.lcd_temperature import calibrate_display
+
+    frame = render_display(26.4, origin=(1400, 200))
+
+    with pytest.raises(RuntimeError):
+        calibrate_display("synthetic", known_temperature=31.8, frame=frame)
+
+
+def test_calibrated_reader_reads_every_frame():
+    """A calibration that decodes one frame must keep working on the rest."""
+    from larvatracker.lcd_temperature import calibrate_display, reader_at
+
+    frame = render_display(24.8, origin=(1400, 200))
+    calibration = calibrate_display("synthetic", known_temperature=24.8, frame=frame)
+
+    reader = reader_at(
+        frame.shape,
+        GEOMETRY_PROFILES[calibration["geometry"]],
+        calibration["scale"],
+        tuple(calibration["anchor"]),
+    )
+    reader.calibrate(frame)
+
+    for value in (24.8, 27.3, 31.5, 38.9):
+        result = reader.read(render_display(value, origin=(1400, 200)))
+        assert result["raw_temperature_c"] == pytest.approx(value, abs=0.05)
+        assert result["raw_valid"]
+
+
+def test_calibration_round_trips_through_json(tmp_path):
+    from larvatracker.lcd_temperature import (
+        calibrate_display,
+        load_calibration,
+        save_calibration,
+    )
+
+    frame = render_display(25.5, origin=(1400, 200))
+    calibration = calibrate_display("synthetic", known_temperature=25.5, frame=frame)
+
+    saved = save_calibration(calibration, str(tmp_path / "cal.json"))
+    restored = load_calibration(saved)
+
+    assert restored["geometry"] == calibration["geometry"]
+    assert restored["anchor"] == calibration["anchor"]
+    assert restored["scale"] == pytest.approx(calibration["scale"])
+
+
+def test_digit_boxes_reject_the_display_frame():
+    """A dark stripe spanning the ROI is the glass edge, not a digit.
+
+    This is the component that produced a wrong calibration in practice: it is
+    darker and larger than any digit, so anything ranking by size picks it.
+    """
+    from larvatracker.lcd_temperature import find_digit_boxes
+
+    roi = (1350, 100, 1800, 400)
+    roi_height = roi[3] - roi[1]
+
+    clean = render_display(23.7, origin=(1400, 200))
+    without_edge = find_digit_boxes(clean, roi)
+
+    frame = clean.copy()
+    # A bezel stripe running the full height of the ROI, as on the real display.
+    cv2.rectangle(frame, (1700, 100), (1720, 400), (10, 10, 10), -1)
+    with_edge = find_digit_boxes(frame, roi)
+
+    # The stripe must not appear, and must not displace the digits either.
+    assert all(box[3] < 0.9 * roi_height for box in with_edge)
+    assert not any(box[0] >= 1700 for box in with_edge)
+    assert len(with_edge) == len(without_edge)
+
+
+def test_read_temperature_track_covers_every_frame(tmp_path):
+    """Recovering a failed readout must not need the segmentation re-run."""
+    from larvatracker.lcd_temperature import calibrate_display, read_temperature_track
+
+    frame = render_display(27.3, origin=(1400, 200))
+    calibration = calibrate_display("synthetic", known_temperature=27.3, frame=frame)
+
+    path = write_synthetic_video(tmp_path / "cal.mp4", 27.3, n_frames=25)
+    records = read_temperature_track(path, calibration, progress_every=0)
+
+    assert len(records) == 25
+    assert [r["frame"] for r in records] == list(range(25))
+    # Timestamps must increase, or the framewise join in step 8 misaligns.
+    assert all(
+        records[i + 1]["time_s"] > records[i]["time_s"] for i in range(len(records) - 1)
+    )

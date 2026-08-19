@@ -87,6 +87,7 @@ def segment_recording(
     read_temperature: bool = True,
     temperature_config=None,
     require_temperature: bool = False,
+    lcd_calibration: dict | None = None,
 ) -> dict:
     """Segment droplets, export ROI videos and read the temperature display.
 
@@ -105,6 +106,11 @@ def segment_recording(
         still processed and only the temperature is missing — the ROI videos
         are the expensive part and are worth keeping even when the display was
         out of frame.
+    lcd_calibration:
+        A calibration from ``scripts/10_calibrate_lcd.py``. When given, the
+        display is read at that known position instead of being searched for.
+        Use it when the full-frame search missed the display or settled on the
+        wrong spot.
 
     Returns
     -------
@@ -154,10 +160,32 @@ def segment_recording(
     records: list[dict] = []
 
     if read_temperature:
-        from larvatracker.lcd_temperature import locate_display
+        from larvatracker.lcd_temperature import (
+            GEOMETRY_PROFILES,
+            locate_display,
+            reader_at,
+        )
 
         try:
-            reader, calibration = locate_display(video_path, temperature_config)
+            if lcd_calibration is not None:
+                # Position already established and verified against the value on
+                # screen; searching again could only move it somewhere worse.
+                reader = reader_at(
+                    frame_bgr.shape,
+                    GEOMETRY_PROFILES[lcd_calibration["geometry"]],
+                    lcd_calibration["scale"],
+                    tuple(lcd_calibration["anchor"]),
+                    temperature_config,
+                    name=lcd_calibration["geometry"],
+                )
+                reader.calibrate(frame_bgr)
+                print(
+                    f"LCD from calibration: {reader.geometry} at "
+                    f"{tuple(lcd_calibration['anchor'])}, scale {reader.scale:.2f}"
+                )
+            else:
+                reader, _ = locate_display(video_path, temperature_config)
+
             result["temperature_geometry"] = reader.geometry
             result["lcd_locator_score"] = reader.locator_score
 
@@ -270,6 +298,7 @@ def segment_batch(
     continue_on_error: bool = True,
     skip_completed: bool = False,
     summary_path: str | None = None,
+    lcd_calibrations: dict | None = None,
     **kwargs,
 ) -> pd.DataFrame:
     """Run :func:`segment_recording` over many videos, loading SAM 3 once.
@@ -309,12 +338,18 @@ def segment_batch(
         print("=" * 70)
 
         try:
+            calibration = None
+            if lcd_calibrations:
+                stem = os.path.splitext(os.path.basename(video))[0]
+                calibration = lcd_calibrations.get(stem)
+
             rows.append(
                 segment_recording(
                     video_path=video,
                     config=cfg,
                     require_cuda=require_cuda,
                     components=components,
+                    lcd_calibration=calibration,
                     **kwargs,
                 )
             )

@@ -48,6 +48,10 @@ one row per larva, keypoint and frame, with its temperature
         │  scripts/07_temperature_response.py
         ▼
 movement across temperature, compared across groups
+        │
+        │  scripts/09_temperature_model.py
+        ▼
+mixed model: one test per group instead of one per bin
 ```
 
 ### Why segment only the first frame
@@ -157,6 +161,20 @@ of the digits relative to each other, so a display in a different corner or at a
 different angle is still found. If it cannot be located the recording is still
 processed and only `temperature.csv` is missing; `--require-temperature` makes
 that fatal instead, and `--no-temperature` skips the search altogether.
+
+**If a recording ends up with no temperature, or with a low coverage in
+`_framewise_report.csv`, calibrate it rather than lowering the threshold:**
+
+```bash
+python scripts/10_calibrate_lcd.py data/V1.mp4 --known-temperature 23.7 \
+    --write-temperature
+```
+
+You supply the number visible on screen at the start; the calibration is then
+chosen by having to decode to exactly that. `--write-temperature` produces
+`temperature.csv` directly, without re-running SAM 3. Lowering
+`--lcd-min-score` instead is how you get a confident, complete and wrong
+temperature trace — the threshold exists precisely to prevent that.
 
 ### 2. Pose estimation (DeepLabCut, external)
 
@@ -271,6 +289,35 @@ Two guard rails run automatically and are worth reading in the output:
   per-drug figure and `stats_vs_control.csv` stay valid either way, because
   each treatment is only ever compared against its own vehicle.
 
+### Optional: mixed model instead of per-bin tests
+
+```bash
+python scripts/09_temperature_model.py \
+    results/temperature/per_larva_by_temperature.csv \
+    --control conventional --out-dir results/model --compare-specifications
+```
+
+Step 7 runs a separate test in every temperature bin. That describes *where* a
+difference sits, but it spends its power on thirty-odd tests: an effect that is
+consistent yet modest at each single temperature will not survive the
+correction. This step asks the question once per group instead:
+
+```
+log(Movement_norm) ~ Group * spline(Temperature) + Folder + (1 + Temperature | larva)
+```
+
+The `Group x spline` interaction is the biological question — does the *shape*
+of the response depend on the group. Each group then gets one joint test
+against the control across the whole range, Holm-corrected over groups.
+
+Contrasts come back as **ratios**, because the response is modelled on the log
+scale: 0.71 means that group moved 71 % as much as the control at that
+temperature. The contrast curve is descriptive and its intervals are pointwise
+— the omnibus test is what establishes whether there is a difference at all.
+
+`--compare-specifications` fits competing spline degrees and random-effect
+structures and ranks them by AIC, so the choice is visible rather than assumed.
+
 ---
 
 ## Output format
@@ -313,6 +360,7 @@ src/larvatracker/       importable package
   stats.py              normalisation, mixed model, post-hoc tests
   framewise.py          per-frame movement joined with the temperature
   temperature.py        movement versus temperature across treatment groups
+  model.py              mixed model for the temperature response
   pipeline.py           end-to-end drivers
   cli.py                shared command line arguments
 scripts/                numbered command line entry points

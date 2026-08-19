@@ -859,3 +859,448 @@ def write_temperature_csv(
         )
 
     return csv_path, summary
+
+
+# ---------------------------------------------------------------------------
+# Deriving the digit geometry from a recording
+# ---------------------------------------------------------------------------
+
+# Where the seven segments sit inside a digit cell, as fractions of the cell.
+# Order is a, b, c, d, e, f, g. The samples sit slightly inside the segment
+# rather than on the cell border, so a small misalignment still lands on the
+# segment rather than on the background.
+def find_display_panel(frame_bgr: np.ndarray, quantile: float = 0.995) -> tuple[int, int, int, int]:
+    """Rough bounding box of the LCD panel, found by its colour.
+
+    The screen is the one place in the scene that is both strongly saturated
+    and distinctly cyan. This only has to be approximately right: it bounds
+    where the digits are looked for, nothing more.
+    """
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    saturation = hsv[:, :, 1] / 255.0
+    cyan = frame_bgr[:, :, 0].astype(np.float32) - frame_bgr[:, :, 2].astype(np.float32)
+
+    score = saturation * 45.0 + cyan * 0.45
+    height, width = frame_bgr.shape[:2]
+
+    # The panel is a flat, uniform colour, so a large share of its pixels carry
+    # exactly the same score. A strict `>` against the quantile then excludes
+    # every one of them and the mask comes out empty — the failure looks like
+    # "no display" when in fact the display is the biggest thing in the image.
+    # Comparing with `>=`, and stepping the quantile down if that still finds
+    # nothing, avoids it.
+    mask = None
+    for level in (quantile, 0.99, 0.98, 0.95):
+        candidate = (score >= np.quantile(score, level)).astype(np.uint8)
+        if candidate.any():
+            mask = candidate
+            break
+
+    if mask is None:
+        return 0, 0, width, height
+
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
+
+    n_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    if n_labels <= 1:
+        return 0, 0, width, height
+
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, w, h = stats[largest, :4]
+    margin = int(0.3 * max(w, h))
+
+    return (
+        _clamp(int(x) - margin, 0, width - 1),
+        _clamp(int(y) - margin, 0, height - 1),
+        _clamp(int(x + w) + margin, 1, width),
+        _clamp(int(y + h) + margin, 1, height),
+    )
+
+
+def find_digit_boxes(
+    frame_bgr: np.ndarray,
+    roi: tuple[int, int, int, int],
+    kernel_size: int = 21,
+    threshold: float = 12.0,
+) -> list[tuple[int, int, int, int]]:
+    """Digit-like dark shapes inside ``roi``, left to right.
+
+    Three kinds of component have to be rejected, and each one caused a wrong
+    result before it was:
+
+    * the **glass edge** of the display, a dark stripe spanning the full height
+      of the ROI;
+    * the **degree symbol and the decimal point**, far smaller than a digit;
+    * anything much shorter than the tallest group, which is scene clutter.
+
+    Adjacent digits may still touch and come out as one component. That is
+    fine here — only the left edge and the height of the group are used.
+    """
+    x0, y0, x1, y1 = roi
+    roi_height = y1 - y0
+
+    grey = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+
+    mask = (_darkness(grey, kernel_size) > threshold).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+
+    n_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n_labels <= 1:
+        return []
+
+    boxes = [tuple(int(v) for v in stats[i, :4]) for i in range(1, n_labels)]
+    boxes = [b for b in boxes if b[3] < 0.9 * roi_height]
+    if not boxes:
+        return []
+
+    tallest = max(b[3] for b in boxes)
+    boxes = [b for b in boxes if b[3] >= 0.7 * tallest]
+
+    return sorted([(b[0] + x0, b[1] + y0, b[2], b[3]) for b in boxes], key=lambda b: b[0])
+
+
+def reader_at(
+    frame_shape,
+    profile: dict,
+    scale: float,
+    anchor: tuple[int, int],
+    config: TemperatureConfig | None = None,
+    name: str = "calibrated",
+    search_px: int | None = None,
+) -> LcdTemperatureReader:
+    """Build a reader at a known geometry, scale and position — no search.
+
+    Once a recording has been calibrated, the display's position is known, and
+    re-running the full-frame search only reintroduces the chance of settling
+    somewhere else. The search exists to *find* an unknown display; with the
+    answer in hand, using it is both faster and safer. The per-frame local
+    search still runs, so camera drift is still absorbed.
+    """
+    cfg = config or TemperatureConfig()
+
+    candidate = {
+        "geometry": name,
+        "effective_scale": float(scale),
+        "angle_deg": 0.0,
+        "anchor_x": int(anchor[0]),
+        "anchor_y": int(anchor[1]),
+        "locator_score": float("nan"),
+        "kernel_size": _odd_size(profile["kernel_size_ref"] * scale, minimum=5),
+        "sample_size": _odd_size(5.0 * scale, minimum=3),
+        "sample_offsets": geometry_offsets(profile, scale, 0.0),
+    }
+
+    reader = LcdTemperatureReader(frame_shape, candidate, cfg)
+    if search_px is not None:
+        reader.search_radius = int(search_px)
+
+    return reader
+
+
+def calibrate_display(
+    video_path: str,
+    known_temperature: float,
+    config: TemperatureConfig | None = None,
+    roi: tuple[int, int, int, int] | None = None,
+    scales=None,
+    profiles: dict | None = None,
+    frame: np.ndarray | None = None,
+) -> dict:
+    """Find where and at what scale the display reads the value you can see.
+
+    The full-frame search in :func:`locate_display` scans the whole image and
+    scores candidates on how digit-like and how LCD-coloured they are. That is
+    the right tool when nothing is known, but it can settle on the wrong spot,
+    and then it reports a confident temperature that is simply not what the
+    screen says.
+
+    This routine removes the guesswork in two steps:
+
+    1. the display region is found by colour and the digits by shape, which
+       narrows the anchor to a window of a few pixels;
+    2. the anchor and scale are then chosen by the only criterion that cannot
+       be faked — the decoded value has to equal ``known_temperature``, the
+       number visible on screen at the start of the recording.
+
+    Parameters
+    ----------
+    known_temperature:
+        What the display shows at the start, read off by eye. Required: without
+        it there is nothing to verify against, and a confidently wrong
+        calibration is worse than none.
+    frame:
+        Calibrate on this image instead of reading the video. Only useful for
+        testing; in normal use the median of the opening frames is the right
+        thing to look at.
+
+    Returns
+    -------
+    dict
+        ``geometry``, ``scale``, ``anchor``, plus what was measured and how
+        cleanly it decoded. Feed it to :func:`reader_at`.
+
+    Raises
+    ------
+    RuntimeError
+        If no combination reproduces ``known_temperature``. Better than
+        returning the closest miss.
+    """
+    cfg = config or TemperatureConfig()
+    profiles = profiles or GEOMETRY_PROFILES
+
+    if frame is None:
+        frame = median_calibration_frame(video_path, cfg.calibration_frames)
+
+    roi = tuple(int(v) for v in roi) if roi is not None else find_display_panel(frame)
+    boxes = find_digit_boxes(frame, roi)
+
+    if not boxes:
+        raise RuntimeError(
+            f"no digit-like shapes inside {roi}. Pass an explicit ROI around the "
+            "display, or check that it is in frame at all."
+        )
+
+    left = min(b[0] for b in boxes)
+    top = int(np.median([b[1] for b in boxes]))
+
+    height, width = frame.shape[:2]
+    ref_width, ref_height = REFERENCE_FRAME_SIZE
+    resolution_scale = min(width / ref_width, height / ref_height)
+
+    # The digit height is already measured, so the scale does not have to be
+    # searched blind. Each profile's sample points span a known fraction of the
+    # glyph — the points sit inside the segments, so the drawn digit is roughly
+    # 1.2x that span — which pins the scale to within a few percent. Sweeping a
+    # narrow band around that estimate instead of the whole plausible range
+    # turns thousands of trial decodes into a few hundred.
+    digit_height = float(np.median([b[3] for b in boxes]))
+
+    best = None
+
+    for name, profile in profiles.items():
+        points = np.asarray(profile["segment_points_ref"], dtype=float)
+        span = float(points[:, 1].max() - points[:, 1].min())
+
+        if scales is None:
+            estimate = digit_height / (span * 1.18)
+            # 2 % steps: the decoding is sensitive at that level, and a coarser
+            # grid can straddle the correct scale without ever landing on it.
+            profile_scales = np.arange(0.88, 1.13, 0.02) * estimate
+        else:
+            profile_scales = np.asarray(scales, dtype=float)
+
+        for scale in profile_scales:
+            for anchor_x in range(left - 14, left + 7, 2):
+                for anchor_y in range(top - 16, top + 17, 2):
+                    reader = reader_at(
+                        frame.shape, profile, float(scale), (anchor_x, anchor_y),
+                        cfg, name=name, search_px=2,
+                    )
+
+                    try:
+                        result = reader.calibrate(frame)
+                    except Exception:  # noqa: BLE001 - grid point does not fit
+                        continue
+
+                    if abs(result["raw_temperature_c"] - known_temperature) >= 0.05:
+                        continue
+                    if result["segment_errors"] != 0:
+                        continue
+
+                    quality = float(result["confidence"])
+                    if best is None or quality > best[0]:
+                        best = (quality, name, float(scale), (anchor_x, anchor_y), result)
+
+    if best is None:
+        raise RuntimeError(
+            f"no geometry, scale or position reproduced {known_temperature} °C. "
+            "Check the value you read off the screen, widen the ROI, or add a "
+            "geometry profile for this display."
+        )
+
+    confidence, name, scale, anchor, result = best
+
+    return {
+        "video": video_path,
+        "geometry": name,
+        "scale": round(scale, 4),
+        "anchor": [int(anchor[0]), int(anchor[1])],
+        "known_temperature_c": float(known_temperature),
+        "decoded_temperature_c": float(result["raw_temperature_c"]),
+        "confidence": round(confidence, 2),
+        "segment_errors": int(result["segment_errors"]),
+        "roi": list(roi),
+        "digit_boxes": [list(b) for b in boxes],
+        "digit_height": int(np.median([b[3] for b in boxes])),
+        "frame_size": [int(width), int(height)],
+    }
+
+
+def measure_coverage(
+    video_path: str,
+    calibration: dict,
+    config: TemperatureConfig | None = None,
+    every: int = 5,
+    max_frames: int | None = None,
+    profiles: dict | None = None,
+) -> dict:
+    """How many frames a calibration actually reads, sampled across the video.
+
+    A calibration that decodes the opening frame is necessary but not
+    sufficient: the display drifts, the ramp changes every digit, and a grid
+    that sits marginally off will start failing halfway through. This samples
+    the whole recording rather than trusting the first frame.
+    """
+    cfg = config or TemperatureConfig()
+    profiles = profiles or GEOMETRY_PROFILES
+
+    frame = median_calibration_frame(video_path, cfg.calibration_frames)
+    reader = reader_at(
+        frame.shape,
+        profiles[calibration["geometry"]],
+        calibration["scale"],
+        tuple(calibration["anchor"]),
+        cfg,
+        name=calibration["geometry"],
+    )
+    reader.calibrate(frame)
+
+    cap = cv2.VideoCapture(str(video_path))
+    values, valid, sampled, index = [], 0, 0, 0
+
+    try:
+        while True:
+            ok, image = cap.read()
+            if not ok or (max_frames is not None and index >= max_frames):
+                break
+
+            if index % every == 0:
+                result = reader.read(image)
+                values.append(result["raw_temperature_c"])
+                valid += int(result["raw_valid"])
+                sampled += 1
+
+            index += 1
+    finally:
+        cap.release()
+
+    values = np.asarray(values, dtype=float)
+
+    return {
+        "frames_sampled": sampled,
+        "frames_valid": valid,
+        "coverage": round(valid / sampled, 4) if sampled else 0.0,
+        "first_value": float(values[0]) if values.size else None,
+        "min_value": float(values.min()) if values.size else None,
+        "max_value": float(values.max()) if values.size else None,
+    }
+
+
+def read_temperature_track(
+    video_path: str,
+    calibration: dict,
+    config: TemperatureConfig | None = None,
+    profiles: dict | None = None,
+    progress_every: int = 500,
+) -> list[dict]:
+    """Read the display on every frame, using an established calibration.
+
+    This exists so that a recording whose temperature failed can be recovered
+    without redoing the segmentation. Step 1 reads the display inside the pass
+    that cuts the ROI videos, which is efficient when both are wanted — but
+    when only the temperature is missing, running SAM 3 again to get it would
+    be absurd.
+    """
+    cfg = config or TemperatureConfig()
+    profiles = profiles or GEOMETRY_PROFILES
+
+    frame = median_calibration_frame(video_path, cfg.calibration_frames)
+    reader = reader_at(
+        frame.shape,
+        profiles[calibration["geometry"]],
+        calibration["scale"],
+        tuple(calibration["anchor"]),
+        cfg,
+        name=calibration["geometry"],
+    )
+    reader.calibrate(frame)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"could not open {video_path!r}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    records, index, last_time = [], 0, -1.0
+
+    try:
+        while True:
+            ok, image = cap.read()
+            if not ok:
+                break
+
+            # Same timestamp rule as the ROI export, so the two line up.
+            position = float(cap.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
+            if not math.isfinite(position) or position < 0 or (
+                index > 0 and position <= last_time
+            ):
+                position = index / fps
+                if index > 0:
+                    position = max(position, last_time + 1.0 / fps)
+            last_time = position
+
+            record = reader.read(image)
+            record["frame"] = index
+            record["time_s"] = position
+            records.append(record)
+
+            index += 1
+            if progress_every and index % progress_every == 0:
+                print(f"  frames read: {index}")
+    finally:
+        cap.release()
+
+    return records
+
+
+def calibration_debug_image(
+    video_path: str,
+    calibration: dict,
+    config: TemperatureConfig | None = None,
+    profiles: dict | None = None,
+) -> np.ndarray:
+    """Annotated crop of the display under a calibration, for checking by eye."""
+    cfg = config or TemperatureConfig()
+    profiles = profiles or GEOMETRY_PROFILES
+
+    frame = median_calibration_frame(video_path, cfg.calibration_frames)
+    reader = reader_at(
+        frame.shape,
+        profiles[calibration["geometry"]],
+        calibration["scale"],
+        tuple(calibration["anchor"]),
+        cfg,
+        name=calibration["geometry"],
+    )
+    reader.calibrate(frame)
+
+    return reader.debug_image(frame, reader.read(frame))
+
+
+def save_calibration(calibration: dict, path: str) -> str:
+    """Write a calibration to JSON so later recordings can reuse it."""
+    import json
+
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(calibration, handle, indent=2)
+
+    return path
+
+
+def load_calibration(path: str) -> dict:
+    """Read a calibration written by :func:`save_calibration`."""
+    import json
+
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
