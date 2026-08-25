@@ -45,6 +45,8 @@ from larvatracker.model import (
     model_diagnostics,
     model_terms,
     predicted_curves,
+    sample_sizes,
+    sample_sizes_by_folder,
 )
 from larvatracker.plotting import plot_model_diagnostics, plot_model_fit
 
@@ -166,6 +168,40 @@ def main(argv: list[str] | None = None) -> int:
     with open(os.path.join(args.out_dir, "model_summary.txt"), "w", encoding="utf-8") as handle:
         handle.write(f"{model.formula}\n\n{model.fit.summary()}\n")
 
+    # --- sample sizes -----------------------------------------------------
+    sizes = sample_sizes(model)
+    sizes.to_csv(os.path.join(args.out_dir, "sample_sizes.csv"), index=False)
+
+    print("\n=== Sample sizes ===")
+    print(sizes.to_string(index=False))
+    print(
+        "\nN_Larvae is the unit of analysis — one random intercept per animal. "
+        "N_Observations counts larva x temperature bin and is not a sample size."
+    )
+
+    by_folder = sample_sizes_by_folder(model)
+    if not by_folder.empty:
+        by_folder.to_csv(os.path.join(args.out_dir, "sample_sizes_by_folder.csv"), index=False)
+
+        print("\n--- animals per recording ---")
+        print(by_folder.to_string(index=False))
+
+        per_group = by_folder.drop(columns=["Folder"])
+        if (per_group == 0).any().any():
+            missing = [
+                f"{column} in {by_folder.loc[per_group[column] == 0, 'Folder'].tolist()}"
+                for column in per_group.columns
+                if (per_group[column] == 0).any()
+            ]
+            print(f"  WARNING: group absent from some recordings — {'; '.join(missing)}")
+
+        smallest, largest = int(per_group.values.min()), int(per_group.values.max())
+        if smallest and largest / smallest >= 3:
+            print(
+                f"  WARNING: group sizes per recording range from {smallest} to "
+                f"{largest}; the recording term will carry part of the group effect."
+            )
+
     # --- omnibus tests ----------------------------------------------------
     terms = model_terms(model)
     terms.to_csv(os.path.join(args.out_dir, "model_terms.csv"), index=False)
@@ -181,7 +217,22 @@ def main(argv: list[str] | None = None) -> int:
     omnibus.to_csv(os.path.join(args.out_dir, "group_tests.csv"), index=False)
 
     print(f"\n=== Each group versus {args.control}, whole range ({args.correction}-corrected) ===")
-    print(omnibus.to_string(index=False))
+    print(
+        omnibus[
+            [
+                "Group",
+                "Control",
+                "N_Larvae",
+                "N_Larvae_Control",
+                "N_Folders",
+                "df",
+                "Chi2",
+                "p_raw",
+                "p_adjusted",
+                "signif",
+            ]
+        ].to_string(index=False)
+    )
 
     # --- contrasts and predictions ---------------------------------------
     contrasts = contrast_curve(model, step=args.contrast_step)
@@ -196,9 +247,13 @@ def main(argv: list[str] | None = None) -> int:
         significant = bool(omnibus.loc[omnibus["Group"] == group, "signif"].iloc[0])
         verdict = "group differs overall" if significant else "no overall difference"
 
+        n_group = int(row["N_Larvae"])
+        n_control = int(row["N_Larvae_Control"])
+
         print(
             f"  {group:<14} {row['Ratio']:.2f}x control at {row['Temperature_C']:.1f} °C "
-            f"[{row['CI_low']:.2f}–{row['CI_high']:.2f}] — {verdict}"
+            f"[{row['CI_low']:.2f}–{row['CI_high']:.2f}], n = {n_group} vs "
+            f"{n_control} — {verdict}"
         )
 
     # --- diagnostics ------------------------------------------------------
@@ -235,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         else "intercept per larva",
         "control": args.control,
         "groups": model.groups,
+        "sample_sizes": sizes.to_dict(orient="records"),
         "correction": args.correction,
         **meta,
         "diagnostics": diagnostics,

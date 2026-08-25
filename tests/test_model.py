@@ -238,3 +238,69 @@ def test_spline_beats_a_linear_term_on_a_curved_response():
     best = usable.iloc[0]
 
     assert best["spline_df"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Sample sizes
+# ---------------------------------------------------------------------------
+
+def test_sample_sizes_count_animals_not_rows(fitted):
+    """The row count is larva x temperature bin, which is not a sample size."""
+    from larvatracker.model import sample_sizes
+
+    sizes = sample_sizes(fitted).set_index("Group")
+
+    assert sizes.loc["control", "N_Larvae"] == 3 * 20     # folders x animals
+    assert sizes.loc["treated", "N_Larvae"] == 3 * 20
+    assert sizes.loc["control", "N_Folders"] == 3
+
+    # Observations are far more numerous — that is exactly the trap.
+    assert sizes.loc["control", "N_Observations"] > 10 * sizes.loc["control", "N_Larvae"]
+
+
+def test_sample_sizes_mark_the_control(fitted):
+    from larvatracker.model import sample_sizes
+
+    sizes = sample_sizes(fitted).set_index("Group")
+
+    assert sizes.loc["control", "Role"] == "control"
+    assert sizes.loc["treated", "Role"] == "treatment"
+
+
+def test_sample_sizes_by_folder_expose_imbalance():
+    """A group missing from one recording must be visible, not averaged away."""
+    import warnings
+
+    from larvatracker.model import sample_sizes_by_folder
+
+    data = make_dataset(n_per_group=8, n_folders=3, seed=11)
+    # Drop the treated animals from one recording entirely.
+    data = data[~((data["Folder"] == "F1") & (data["Group"] == "treated"))]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = fit_temperature_model(data, control="control")
+
+    table = sample_sizes_by_folder(model).set_index("Folder")
+
+    assert table.loc["F1", "treated"] == 0
+    assert table.loc["F0", "treated"] == 8
+    assert table.loc["F1", "control"] == 8
+
+
+def test_group_tests_carry_the_sample_sizes(fitted):
+    """A p-value without an n is not reportable."""
+    tests = group_omnibus_tests(fitted)
+    row = tests.iloc[0]
+
+    assert row["N_Larvae"] == 60
+    assert row["N_Larvae_Control"] == 60
+    assert row["N_Folders"] == 3
+    assert row["N_Observations"] > 0
+
+
+def test_contrast_curve_carries_the_sample_sizes(fitted):
+    curve = contrast_curve(fitted, step=2.0)
+
+    assert (curve["N_Larvae"] == 60).all()
+    assert (curve["N_Larvae_Control"] == 60).all()

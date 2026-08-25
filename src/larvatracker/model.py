@@ -246,6 +246,64 @@ def model_terms(model: TemperatureModel) -> pd.DataFrame:
     return table
 
 
+def sample_sizes(model: TemperatureModel) -> pd.DataFrame:
+    """How many animals, recordings and measurements stand behind each group.
+
+    ``N_Larvae`` is the number that matters. It is the unit of analysis: the
+    model has one random intercept per animal, and a group of 10 animals
+    measured at 30 temperatures carries the evidence of 10 animals, not 300.
+    Reporting the row count instead would overstate the sample by the number of
+    temperature bins.
+
+    ``N_Folders`` is worth reporting alongside it. Ten animals spread over three
+    recording days and ten animals from a single day are not equivalent
+    evidence, and the recording term in the model is usually large.
+    """
+    # ``larva`` was built in prepare_model_frame from dataset, folder and
+    # droplet, so counting it is both correct and immune to the grouping
+    # columns being dropped from a sub-frame.
+    rows = []
+    for group, data in model.data.groupby("Group", observed=True):
+        rows.append(
+            {
+                "Group": group,
+                "Role": "control" if group == model.control else "treatment",
+                "N_Larvae": int(data["larva"].nunique()),
+                "N_Folders": int(data["Folder"].nunique()) if "Folder" in data else 1,
+                "N_Observations": int(len(data)),
+                "Temp_Bins": int(data["Temp_Bin"].nunique()),
+                "Median_Movement_norm": round(float(data["Movement_norm"].median()), 3),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["Role", "Group"]).reset_index(drop=True)
+
+
+def sample_sizes_by_folder(model: TemperatureModel) -> pd.DataFrame:
+    """Animals per group and recording — the table that exposes an imbalance.
+
+    A group that is missing from one recording, or represented by two animals
+    there and twelve in another, will not behave like the others in the model.
+    That is invisible in the per-group totals and obvious here.
+    """
+    if "Folder" not in model.data.columns:
+        return pd.DataFrame()
+
+    counts = (
+        model.data.groupby(["Folder", "Group"], observed=True)["larva"]
+        .nunique()
+        .rename("N_Larvae")
+        .reset_index()
+    )
+
+    table = counts.pivot(index="Folder", columns="Group", values="N_Larvae")
+
+    # A group absent from a recording produces no row at all, so the missing
+    # cell has to become an explicit zero — that absence is the thing worth
+    # seeing.
+    return table.fillna(0).astype(int).reset_index()
+
+
 def group_omnibus_tests(
     model: TemperatureModel,
     correction: str = "holm",
@@ -266,6 +324,11 @@ def group_omnibus_tests(
 
     names = model.param_names
     beta, vcov = model.beta, model.vcov
+
+    # A test statistic without a sample size is not reportable, so the counts
+    # travel with the p-value rather than in a separate file the reader has to
+    # go and find.
+    counts = sample_sizes(model).set_index("Group")
 
     rows = []
     for group in model.groups:
@@ -289,6 +352,10 @@ def group_omnibus_tests(
             {
                 "Group": group,
                 "Control": model.control,
+                "N_Larvae": int(counts.loc[group, "N_Larvae"]),
+                "N_Larvae_Control": int(counts.loc[model.control, "N_Larvae"]),
+                "N_Folders": int(counts.loc[group, "N_Folders"]),
+                "N_Observations": int(counts.loc[group, "N_Observations"]),
                 "df": len(idx),
                 "Chi2": statistic,
                 "p_raw": p_value,
@@ -332,6 +399,8 @@ def contrast_curve(
     beta, vcov = model.beta, model.vcov
     z_critical = stats.norm.ppf(1 - alpha / 2)
 
+    larvae = model.data.groupby("Group", observed=True)["larva"].nunique()
+
     rows = []
     for group in model.groups:
         for celsius in np.asarray(temperatures, dtype=float):
@@ -346,6 +415,8 @@ def contrast_curve(
                 {
                     "Group": group,
                     "Control": model.control,
+                    "N_Larvae": int(larvae[group]),
+                    "N_Larvae_Control": int(larvae[model.control]),
                     "Temperature_C": celsius,
                     "Ratio": np.exp(difference),
                     "CI_low": np.exp(difference - z_critical * standard_error),

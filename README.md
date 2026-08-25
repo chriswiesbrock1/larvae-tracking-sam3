@@ -318,6 +318,12 @@ temperature. The contrast curve is descriptive and its intervals are pointwise
 `--compare-specifications` fits competing spline degrees and random-effect
 structures and ranks them by AIC, so the choice is visible rather than assumed.
 
+Sample sizes are reported with the statistics, in `sample_sizes.csv` and in
+`group_tests.csv` next to each p-value. **`N_Larvae` is the sample size** — one
+random intercept per animal. `N_Observations` counts larva x temperature bin
+and is tens of times larger; it is not an n. `sample_sizes_by_folder.csv`
+breaks the animals down per recording, which is where an imbalance shows up.
+
 ---
 
 ## Output format

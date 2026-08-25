@@ -223,6 +223,46 @@ were kept, and the recording should be reprocessed.
 
 ---
 
+## Step 9 — model outputs
+
+### `sample_sizes.csv`
+
+One row per group. **`N_Larvae` is the sample size**: the model fits one random
+intercept per animal, so a group of 10 animals measured at 30 temperatures
+carries the evidence of 10 animals. `N_Observations` counts larva x temperature
+bin and is roughly thirty times larger — quoting it as an n would overstate the
+study by that factor.
+
+| Column | Meaning |
+| --- | --- |
+| `Group`, `Role` | group name, and whether it is the control |
+| `N_Larvae` | **animals — the unit of analysis** |
+| `N_Folders` | recordings those animals came from |
+| `N_Observations` | rows, i.e. larva x temperature bin |
+| `Temp_Bins` | temperature bins the group appears in |
+| `Median_Movement_norm` | median normalised movement |
+
+### `sample_sizes_by_folder.csv`
+
+Animals per group and recording. A zero means the group is missing from that
+recording entirely, which the per-group totals hide. In a design where each
+treatment appears in only two or three of eleven recordings, the recording
+term and the group term compete for the same variance, and the script says so.
+
+### `group_tests.csv`
+
+One row per group: the joint test against the control across the whole
+temperature range, with `N_Larvae` and `N_Larvae_Control` alongside the
+p-value, plus `p_adjusted` after correction across groups.
+
+### `contrast_curve.csv`
+
+Ratio to the control at each temperature, with a pointwise confidence interval
+and the sample sizes. Descriptive: it localises a difference the omnibus test
+established, and its intervals are not corrected for the many temperatures.
+
+---
+
 ## Step 5 — statistics outputs
 
 ### `normalised_data.csv`
